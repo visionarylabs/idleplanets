@@ -1,0 +1,82 @@
+/**
+    GAME STYLES
+**/
+
+.game-area{
+    max-width: 600px;
+    max-height: 600px;
+}
+
+html{
+    margin: 0;
+    padding: 0;
+}
+
+body{
+    margin: 0;
+    padding: 0;
+    text-align: center;
+    background: #000;
+    color: #999;
+    font-family: verdana, helvetica, arial, sans-serif;
+    font-size: 1em;
+    line-height: 1.6em;
+}
+a{
+    color: #999;
+    font-style: italic;
+}
+    a:link{
+        color: #999;
+    }
+    a:hover{
+        color: #bbb;
+    }
+    a:active{
+        color: #ccc;
+    }
+
+h1,h2,h3,h4,h5{
+    text-transform: uppercase;
+    font-weight: normal;
+    text-shadow: 1px 1px 2px rgba(0,0,0,.75);
+}
+
+.game-area{
+    display: block;
+    position: relative;
+    background-color: #111111;
+    background-image: none;
+    background-position: 50% 50%;
+    background-repeat: no-repeat;
+    margin: 0 auto;
+    padding: 0;
+}
+
+.game-canvas{
+    display: block;
+    position: relative;
+    width: auto;
+    height: auto;
+    margin: auto;
+}
+
+.game-info{
+    background: none;
+    color: #fff;
+    height: auto;
+    width: 100%;
+    position: relative;
+    box-sizing: border-box;
+    margin: 20px auto;;
+    padding: 10px 50px;
+    background: #222;
+    max-width: 800px;
+}
+
+/**
+    RESPONSIVE
+**/
+@media (min-width: 500px) {
+
+}
