@@ -11,6 +11,13 @@ var canvas = document.getElementById('game-canvas');
 var ctx = canvas.getContext("2d");
 var w = window;
 
+// Cross-browser support for requestAnimationFrame
+var requestAnimationFrame = w.requestAnimationFrame || w.webkitRequestAnimationFrame || w.msRequestAnimationFrame || w.mozRequestAnimationFrame;
+
+// helper objects
+var gameTools = null;
+var gameRules = null;
+
 // timing vars
 var then = performance.now();
 var modifier = 0;
@@ -26,6 +33,60 @@ var curX = 60;
 // environment vars
 var options = {};
 options.gameSpeed = 4; //1 min = 1 hour
+
+var battleField = {
+    size : {width : null, height : null},
+    window : {width : null, height : null},
+    position : {x : null, y : null},
+    zoom : null
+};
+
+// key Listeners
+var keysDown = {};
+addEventListener("keydown", function (e) {
+    e.preventDefault();
+    keysDown[e.keyCode] = true;
+}, false);
+
+addEventListener("keyup", function (e) {
+    e.preventDefault();
+    delete keysDown[e.keyCode];
+}, false);
+
+// mouse listeners
+canvas.addEventListener('click', function(e) {
+    click = gameTools.getMousePos(canvas,e);
+    gameTools.processClick(click);
+});
+
+canvas.addEventListener('mousemove', function(e) {
+    pos = gameTools.getMousePos(canvas,e);
+});
+
+////////////////////////////////////////////////////////////////////////////
+// GAME
+
+//start the game to play
+var init = function(){
+    gameTools = new gameToolsObject();
+    gameRules = new gameRulesObject();
+    
+    canvas.width = 600;
+    canvas.height = 600;
+    canvas.id = 'game-canvas';
+
+    buildPlanets();
+
+    //load graphics
+    sun.image = new Image();
+    sun.image.src = './images/sun.png';
+
+    bg.image = new Image();
+    bg.image.src = './images/bg.png';
+    
+    resetGame();
+    mainLoop();
+};
 
 //game state
 var state = {};
@@ -68,7 +129,11 @@ var planetFactory = function(name){
         spriteRadius : 10,
         radius : 10,
         xc : 0,
-        yc : 0
+        yc : 0,
+        base : {
+            crew : 0,
+            earning : 50, //dollars per earth day per crew
+        }
     }
 
     planet.y = curY;
@@ -119,8 +184,11 @@ var planetFactory = function(name){
     curX += 0;
     
     planet.interface = interfaceFactory();
-    planet.interface.buttons.push( buttonFactory('test') );
-    planet.interface.buttons.push( buttonFactory('test2') );
+    
+    if(name == 'earth'){
+        planet.interface.buttons.push( buttonFactory('hire',planet) );   
+    }
+
 
     return planet;
 }
@@ -139,29 +207,23 @@ var interfaceFactory = function(){
     return interface;
 }
 
-var buttonFactory = function(text){
+var buttonFactory = function(text,planet){
+    var textX = 120;
+    var buttonWidth = 50;
+    var buttonHeight = 20;
+    var buttonPadding = 5;
+
     var button = {
         action : null,
-        label : text
+        label : text,
+        x : planet.x + textX - buttonPadding,
+        y : planet.y - buttonPadding,
+        w : buttonWidth,
+        h : buttonHeight,
     }
+ 
     return button;
 }
-
-// key Listeners
-var keysDown = {};
-
-addEventListener("keydown", function (e) {
-    e.preventDefault();
-    keysDown[e.keyCode] = true;
-}, false);
-
-addEventListener("keyup", function (e) {
-    e.preventDefault();
-    delete keysDown[e.keyCode];
-}, false);
-
-// Cross-browser support for requestAnimationFrame
-var requestAnimationFrame = w.requestAnimationFrame || w.webkitRequestAnimationFrame || w.msRequestAnimationFrame || w.mozRequestAnimationFrame;
 
 //sound mixer
 var mixer = function(){
@@ -178,29 +240,20 @@ var mixer = function(){
     }
 }();
 
-//start the game to play
-var init = function(){
-    canvas.width = 600;
-    canvas.height = 600;
-    canvas.id = 'game-canvas';
-
-    buildPlanets();
-
-    //load graphics
-    sun.image = new Image();
-    sun.image.src = './images/sun.png';
-
-    bg.image = new Image();
-    bg.image.src = './images/bg.png';
-    
-    resetGame();
-    mainLoop();
-};
-
 //reset the game for start and reset
 var resetGame = function () {
     sun.y = 0;
     sun.x = 0;
+    planets.earth.base.crew = 1;
+    console.log('here is the state');
+    console.log(state);
+    //setup the battlefield
+    battleField = {
+        size : {width : canvas.width, height : canvas.height},
+        window : {width : canvas.width, height : canvas.height},
+        position : {x : 0, y : 0},
+        zoom : 1
+    };
 };
 
 // Check inputs for how to update sprites
@@ -208,7 +261,7 @@ var update = function (modifier) {
 
     //timer for earth days
     state.earthDays = ( ( (curTime / 24) ) * options.gameSpeed).toFixed(2);
-    state.funds = (state.earthDays * 1000).toFixed(0);
+    state.funds = (state.earthDays * planets.earth.base.earning * planets.earth.base.crew).toFixed(0);
 
     sun.rotation++;
 };
@@ -245,9 +298,6 @@ var showSprites = function(){
     planetNames.forEach(function(element){
         var p = planets[element];
         var textX = 40;
-        var buttonWidth = 50;
-        var buttonHeight = 20;
-        var buttonPadding = 5;
         
         ctx.fillStyle = "rgb(150,150,150)";
         //ctx.fillRect(p.x, p.y, p.spriteDiameter, p.spriteDiameter);
@@ -265,15 +315,24 @@ var showSprites = function(){
 
         //planet interface
         if(p.interface.buttons.length > 0 ){
-            var buttonLabel = p.interface.buttons[0].label;
+            var button = p.interface.buttons[0];
+            var buttonLabel = button.label;
+
+            //print crew
+            ctx.fillStyle = "white";
+            ctx.font = "normal 10pt Verdana";
+            ctx.fillText('crew: ' + p.base.crew, p.x + 40, p.y + 24);
+
 
             //print button
             ctx.fillStyle = "rgb(150,150,150)";
-            ctx.fillRect(p.x + textX - buttonPadding, p.y - buttonPadding, buttonWidth, buttonHeight);
+            ctx.fillRect(button.x, button.y, button.w, button.h);
 
             ctx.fillStyle = "black";
             ctx.font = "normal 10pt Verdana";
-            ctx.fillText(buttonLabel, p.x + textX, p.y + 10);
+            ctx.fillText(buttonLabel, button.x + 4, button.y + 14);
+
+
 
         }
 
@@ -317,6 +376,168 @@ var mainLoop = function () {
     curTime = Math.floor( (then - startTime) / 1000 );
     requestAnimationFrame(mainLoop);
 };
+
+///////////////////////
+// RULES
+// Game Rules Conroller
+// process inputs according to rules
+
+var gameRulesObject = function(){
+    
+    var checkClickForButton = function(click){
+        //loop all planets check for interfaces and buttons
+        var loopObj = planetNames;
+        var loopLength = loopObj.length;
+
+        planetNames.forEach(function(element){
+            var p = planets[element];
+            if( p.interface.buttons.length == 0 ) return;
+            var thisButton = p.interface.buttons[0];
+            //sprite: x,y,w,h
+            //click: x,y (upper left)
+            //check if this sprite was clicked
+            //get left and top edge of sprite
+            var sLeftEdge = thisButton.x; //thisButton.x - thisButton.w / 2;
+            var sTopEdge = thisButton.y; //thisButton.y - thisButton.h / 2;
+            if(
+                click.x > sLeftEdge && click.x < (sLeftEdge + thisButton.w)
+                &&
+                click.y > sTopEdge && click.y < (sTopEdge + thisButton.h)
+            ){
+                console.log('CLICKED ME!');
+                console.log(thisButton);
+                planets.earth.base.crew++;
+                return thisButton;
+            }
+        });
+    }
+
+    var processButtonClick = function(thisUnit){
+        /**
+            process clicked button
+        **/
+        console.log('blast off!');
+    }
+
+    var processBlankClick = function(click){
+        //no button is cilcked
+        //if a unit is selected try to move
+
+        //see if the click is on the battlefield
+        if(
+            click.y > battleField.window.height ||
+            click.x > battleField.window.width
+        ){
+            console.log('outside of battlefield');
+            return;
+        }
+
+    }
+
+    return{
+        checkClickForButton : checkClickForButton,
+        processBlankClick : processBlankClick,
+        processButtonClick : processButtonClick,
+    }
+
+}
+
+
+////////////////////// 
+// TOOLS
+// Data, Mouse Pos
+
+var gameToolsObject = function(){
+
+    //data, game
+    var saveGame = function(saveData){
+        console.log('...post save game data:');
+        console.log(saveData);
+        var url = 'data/save/' + '?t=' + Date.now();
+        postJSON(url, saveData);
+    }
+
+    var loadGame = function(gameData){
+    }
+
+    var processClick = function (click) {
+        console.log('process click');
+        console.log(click);
+        var clickedButton = gameRules.checkClickForButton(click);
+        if(clickedButton){
+            gameRules.processButtonClick(clickedButton);
+        }else{
+            gameRules.processBlankClick(click);
+        }
+    }
+
+    var getJSON = function(url,teamId,teamColor) {
+        cl('getting JSON data...');
+        $.ajax({
+            type: "GET",
+            url: url,
+            success: function(data){
+                console.log('...DONE GETTING JSON:');
+                console.log( data );
+                state.player[teamColor] = data;
+                state.player[teamColor].color = teamColor;
+                if(state.gameMode == 'quick'){
+                    var data2 = JSON.parse(JSON.stringify(data));
+                    state.player.blue = data2;
+                    state.player.blue.color = 'blue';
+                    //todo prommse instead?
+                    gameInterface.clickButtonStartGame();
+                }
+                return data;
+            },
+            dataType: "json",
+            contentType : "application/json"
+        });
+        
+    }
+
+    var postJSON = function(url, saveData) {
+
+        var sendData = JSON.stringify(saveData);
+        $.ajax({
+            type: "POST",
+            url: url,
+            data: sendData,
+            success: function(data){
+                console.log('...DONE posting data:');
+                console.log( data );
+            },
+            dataType: "json",
+            contentType : "application/json"
+        });
+
+    }
+
+    var getMousePos = function (canvas,e) {
+        var rect = canvas.getBoundingClientRect();
+        return {
+          x: Math.floor(e.clientX - rect.left),
+          y: Math.floor(e.clientY - rect.top)
+        };
+    }
+
+    //pass in two ojbs, a click or sprite
+    //must have x and y properties
+    var getDistance = function(one,two){
+        var dx = Math.abs(one.x - two.x);
+        var dy = Math.abs(one.y - two.y);
+        return Math.sqrt(Math.pow(dx, 2) + Math.pow(dy, 2));
+    }
+
+    return{
+        saveGame : saveGame,
+        loadGame : loadGame,
+        getMousePos : getMousePos,
+        getDistance : getDistance,
+        processClick : processClick
+    }
+
+}
 
 // Let's play this game!
 init();
