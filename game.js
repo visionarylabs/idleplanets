@@ -29,10 +29,11 @@ var curTime = startTime;
 var gridSize = 40;
 var curY = 500;
 var curX = 60;
+var mousePos = {};
 
 // environment vars
 var options = {};
-options.gameSpeed = 4; //1 min = 1 hour
+options.gameSpeed = 24; //hours per sec // 24 = 1 day per second
 
 var battleField = {
     size : {width : null, height : null},
@@ -42,7 +43,7 @@ var battleField = {
 };
 
 // key Listeners
-var keysDown = {};
+var keysDown = [];
 addEventListener("keydown", function (e) {
     e.preventDefault();
     keysDown[e.keyCode] = true;
@@ -60,40 +61,19 @@ canvas.addEventListener('click', function(e) {
 });
 
 canvas.addEventListener('mousemove', function(e) {
-    pos = gameTools.getMousePos(canvas,e);
+    mousePos = gameTools.getMousePos(canvas,e);
 });
 
 ////////////////////////////////////////////////////////////////////////////
 // GAME
 
-//start the game to play
-var init = function(){
-    gameTools = new gameToolsObject();
-    gameRules = new gameRulesObject();
-    
-    canvas.width = 600;
-    canvas.height = 600;
-    canvas.id = 'game-canvas';
-
-    buildPlanets();
-
-    //load graphics
-    sun.image = new Image();
-    sun.image.src = './images/sun.png';
-
-    bg.image = new Image();
-    bg.image.src = './images/bg.png';
-    
-    resetGame();
-    mainLoop();
-};
-
-//game state
+//GLOBAL GAME STATE
 var state = {};
 state.earthDays = 0;
 state.funds = 0;
+state.screen = 'game';
 
-//sprites
+//global vars / sprites
 var bg = {};
 
 var sun = {
@@ -105,11 +85,95 @@ var sun = {
     image : null,
 };
 
+var planets = {};
+
 var planetNames = [
     'mercury', 'venus', 'earth', 'mars', 'jupiter', 'saturn', 'uranus', 'neptune'
 ];
 
-var planets = {};
+//START THE GAME
+var init = function(){
+    gameTools = new gameToolsObject();
+    gameRules = new gameRulesObject();
+    
+    canvas.width = 600;
+    canvas.height = 600;
+    canvas.id = 'game-canvas';
+    canvas.onselectstart = function () { return false; } //stop text select on double click
+
+    buildPlanets();
+    loadGraphics();
+    resetGame();
+    mainLoop();
+};
+
+//reset the game for start and reset
+var resetGame = function () {
+    sun.y = 0;
+    sun.x = 0;
+    planets.earth.base.buildings.office.crew = 1;
+    console.log('here is the state');
+    console.log(state);
+    //setup the battlefield
+    battleField = {
+        size : {width : canvas.width, height : canvas.height},
+        window : {width : canvas.width, height : canvas.height},
+        position : {x : 0, y : 0},
+        zoom : 1
+    };
+};
+
+// Check inputs for how to update sprites
+var update = function (modifier) {
+
+
+    if (27 in keysDown ) {
+        state.screen = 'game';
+    }
+
+    //timer for earth days
+    state.earthDays = ( ( (curTime / 24) ) * options.gameSpeed).toFixed(0);
+    state.funds = (state.earthDays * planets.earth.base.buildings.office.earning * planets.earth.base.buildings.office.crew).toFixed(0);
+
+    sun.rotation++;
+};
+
+// Draw everything
+var render = function () {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    showBg();
+    showText();
+    showSprites();
+    showInterface();
+};
+
+/**
+    FACTORIES
+**/
+
+var buildingFactory = function(type){
+
+    var building = {
+        type : 'office',
+        crew : 1,
+        earning : 50, //dollars per earth day per crew
+    }
+    
+    return building;
+}
+
+var shipFactory = function(){
+
+    var ship = {
+        cost : 1000000,
+        fuel : 1000000,
+        crew : 1000,
+        destination : null,
+        distanceLeft : 0
+    }
+
+    return ship;
+}
 
 var planetFactory = function(name){
 
@@ -130,9 +194,14 @@ var planetFactory = function(name){
         radius : 10,
         xc : 0,
         yc : 0,
+        buttons : [],
         base : {
-            crew : 0,
-            earning : 50, //dollars per earth day per crew
+            maxCrew : 10,
+            fuel : 0,
+            inspiration : 0,
+            discontent : 0,
+            buildings : {},
+            ships : [],
         }
     }
 
@@ -149,6 +218,7 @@ var planetFactory = function(name){
 
         case 'earth':
             planet.diameter = 8000;
+            planet.base.buildings.office = buildingFactory('office');
         break;
 
         case 'mars':
@@ -182,11 +252,11 @@ var planetFactory = function(name){
 
     curY -= gridSize * 1.5;
     curX += 0;
-    
-    planet.interface = interfaceFactory();
-    
+
     if(name == 'earth'){
-        planet.interface.buttons.push( buttonFactory('hire',planet) );   
+        planet.buttons.push( buttonFactory('hire',planet) );
+        planet.buttons.push( buttonFactory('build',planet) );
+        planet.buttons.push( buttonFactory('launch',planet) );
     }
 
 
@@ -200,15 +270,8 @@ var buildPlanets = function(){
     console.log(planets);
 }
 
-var interfaceFactory = function(){
-    var interface = {
-        buttons : []
-    }
-    return interface;
-}
-
-var buttonFactory = function(text,planet){
-    var textX = 120;
+var buttonFactory = function(text,planet,type){
+    var textX = 140;
     var buttonWidth = 50;
     var buttonHeight = 20;
     var buttonPadding = 5;
@@ -220,61 +283,28 @@ var buttonFactory = function(text,planet){
         y : planet.y - buttonPadding,
         w : buttonWidth,
         h : buttonHeight,
+        buttons : []
+    }
+
+    if(text === 'build'){
+        button.buttons.push( buttonFactory('ship',planet,'build') );
+        button.buttons.push( buttonFactory('launchpad',planet,'build') );
+        button.buttons.push( buttonFactory('mine',planet,'build') );
+    }
+ 
+    if(type === undefined){
+        //move button over in row
+        button.x += (planet.buttons.length * (buttonWidth + buttonPadding) );
+    }else{
+        button.x = 80;
+        button.y = 80;
+        button.w = 100;
     }
  
     return button;
 }
 
-//sound mixer
-var mixer = function(){
-    
-    var sound01 = document.createElement("audio");
-    sound01.src = "sounds/sound-01.mp3";
-    
-    var playSound01 = function(){
-        sound01.play();
-    }
-    
-    return{
-        playSound01 : playSound01
-    }
-}();
-
-//reset the game for start and reset
-var resetGame = function () {
-    sun.y = 0;
-    sun.x = 0;
-    planets.earth.base.crew = 1;
-    console.log('here is the state');
-    console.log(state);
-    //setup the battlefield
-    battleField = {
-        size : {width : canvas.width, height : canvas.height},
-        window : {width : canvas.width, height : canvas.height},
-        position : {x : 0, y : 0},
-        zoom : 1
-    };
-};
-
-// Check inputs for how to update sprites
-var update = function (modifier) {
-
-    //timer for earth days
-    state.earthDays = ( ( (curTime / 24) ) * options.gameSpeed).toFixed(2);
-    state.funds = (state.earthDays * planets.earth.base.earning * planets.earth.base.crew).toFixed(0);
-
-    sun.rotation++;
-};
-
-// Draw everything
-var render = function () {
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    showBg();
-    showText();
-    showSprites();
-};
-
-// game sprites
+// SPRITES
 var showSprites = function(){
 
     //sun
@@ -314,31 +344,110 @@ var showSprites = function(){
         textX += 80;
 
         //planet interface
-        if(p.interface.buttons.length > 0 ){
-            var button = p.interface.buttons[0];
-            var buttonLabel = button.label;
+        if(p.buttons.length > 0 ){
+            p.buttons.forEach(function(button){
+                
+                var buttonLabel = button.label;
+    
+                //print crew
+                ctx.fillStyle = "white";
+                ctx.font = "normal 9pt Verdana";
+                ctx.fillText('crew: ' + p.base.buildings.office.crew, p.x + 40, p.y + 24);
 
-            //print crew
-            ctx.fillStyle = "white";
-            ctx.font = "normal 10pt Verdana";
-            ctx.fillText('crew: ' + p.base.crew, p.x + 40, p.y + 24);
+                //print button
+                ctx.fillStyle = "rgb(150,150,150)";
+                ctx.fillRect(button.x, button.y, button.w, button.h);
+    
+                ctx.fillStyle = "black";
+                ctx.font = "normal 10pt Verdana";
+                ctx.fillText(buttonLabel, button.x + 4, button.y + 14);
 
+                //print buildings
+                ctx.fillStyle = "white";
+                ctx.font = "normal 9pt Verdana";
 
-            //print button
-            ctx.fillStyle = "rgb(150,150,150)";
-            ctx.fillRect(button.x, button.y, button.w, button.h);
+                ctx.fillText('max crew: ' + p.base.maxCrew, p.x + 40, p.y + 36);
 
-            ctx.fillStyle = "black";
-            ctx.font = "normal 10pt Verdana";
-            ctx.fillText(buttonLabel, button.x + 4, button.y + 14);
+                //print inspiration
+                ctx.fillText('inspiration: ' + p.base.inspiration, p.x + 40, p.y + 48);
 
-
-
+            });
         }
 
     });
 
 };
+
+/**
+    INTERFACE
+**/
+var showInterface = function () {
+    /**
+        MODAL UI BOX
+    **/
+    if(state.screen == 'modal'){
+        var modalOffset = 50; //inset from canvas
+        var verticalOffset = 20;
+        var horizontalOffset = 40;
+        verticalOffset += modalOffset;
+        horizontalOffset += modalOffset;
+
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect( modalOffset, modalOffset, canvas.width - (modalOffset * 2), canvas.height - (modalOffset * 2) );
+
+        ctx.textAlign = "left";
+        //ctx.textBaseline = "top";
+
+        ctx.fillStyle = "rgb(0, 0, 0)";
+        ctx.font = "24px Helvetica";
+
+        verticalOffset += modalOffset;
+        ctx.fillText('Build', horizontalOffset, verticalOffset);
+
+        ctx.fillStyle = "rgb(0, 90, 0)";
+        ctx.font = "14px Helvetica";
+
+        //loop all planets check for interfaces and buttons
+        if(state.screen === 'modal'){
+            var loopObj = planetNames;
+            var loopLength = loopObj.length;
+
+            var curX = horizontalOffset;
+            var curY = verticalOffset;
+
+            loopObj.forEach(function(element){
+                var p = planets[element];
+                if( p.buttons.length == 0 ) return;
+                p.buttons.forEach(function(thisButton){
+                    if( thisButton.buttons.length == 0 ) return;
+                    thisButton.buttons.forEach(function(modalButton){
+                        curY += 30;
+
+                        modalButton.y = curY;
+
+                        //print button
+                        //button hover in modal
+                        if(
+                            mousePos.x > modalButton.x &&
+                            mousePos.x < (modalButton.x + modalButton.w) &&
+                            mousePos.y > modalButton.y &&
+                            mousePos.y < (modalButton.y + modalButton.h)
+                        ){
+                            ctx.fillStyle = "rgb(255,150,150)";
+                        }else{
+                            ctx.fillStyle = "rgb(200,200,200)";
+                        }
+                        ctx.fillRect(modalButton.x, modalButton.y, modalButton.w, modalButton.h);
+
+                        ctx.fillStyle = "rgb(0,0,0)";
+                        ctx.fillText(modalButton.label, modalButton.x + 4, modalButton.y + modalButton.h - 6);
+                    });
+                });
+            });
+        }
+
+    }
+}
 
 // game ui
 var showText = function(){
@@ -365,6 +474,30 @@ var showBg = function(){
     }
 };
 
+// load graphics
+var loadGraphics = function(){
+    sun.image = new Image();
+    sun.image.src = './images/sun.png';
+
+    bg.image = new Image();
+    bg.image.src = './images/bg.png';
+}
+
+//sound mixer
+var mixer = function(){
+    
+    var sound01 = document.createElement("audio");
+    sound01.src = "sounds/sound-01.mp3";
+    
+    var playSound01 = function(){
+        sound01.play();
+    }
+    
+    return{
+        playSound01 : playSound01
+    }
+}();
+
 // The main game loop
 var mainLoop = function () {
     var now = performance.now();
@@ -385,30 +518,80 @@ var mainLoop = function () {
 var gameRulesObject = function(){
     
     var checkClickForButton = function(click){
-        //loop all planets check for interfaces and buttons
-        var loopObj = planetNames;
-        var loopLength = loopObj.length;
 
-        planetNames.forEach(function(element){
+        //loop all planets check for interfaces and buttons
+        var loopObj;
+        var loopLength;
+
+        //loop all planets check for interfaces and buttons
+        loopObj = planetNames;
+        loopLength = loopObj.length;
+
+        loopObj.forEach(function(element){
             var p = planets[element];
-            if( p.interface.buttons.length == 0 ) return;
-            var thisButton = p.interface.buttons[0];
-            //sprite: x,y,w,h
-            //click: x,y (upper left)
-            //check if this sprite was clicked
-            //get left and top edge of sprite
-            var sLeftEdge = thisButton.x; //thisButton.x - thisButton.w / 2;
-            var sTopEdge = thisButton.y; //thisButton.y - thisButton.h / 2;
-            if(
-                click.x > sLeftEdge && click.x < (sLeftEdge + thisButton.w)
-                &&
-                click.y > sTopEdge && click.y < (sTopEdge + thisButton.h)
-            ){
-                console.log('CLICKED ME!');
-                console.log(thisButton);
-                planets.earth.base.crew++;
-                return thisButton;
-            }
+            if( p.buttons.length == 0 ) return;
+
+            p.buttons.forEach(function(thisButton){
+
+                //SUB loop for modal buttons
+                //todo check for each modal screen
+                if(state.screen === 'modal' && thisButton.buttons.length > 0){
+                    thisButton.buttons.forEach(function(modalButton){
+                        var sLeftEdge = modalButton.x;
+                        var sTopEdge = modalButton.y;
+                        if(
+                            click.x > sLeftEdge && click.x < (sLeftEdge + modalButton.w)
+                            &&
+                            click.y > sTopEdge && click.y < (sTopEdge + modalButton.h)
+                        ){
+                            console.log('CLICKED A MODAL BUTTON!');
+                            console.log(modalButton);
+                            switch(modalButton.label){
+                                case 'ship':
+                                    planets.earth.base.ships++;
+                                break;
+                                case 'launchpad':
+                                    planets.earth.base.buildings.push('launchpad');
+                                break;
+                                case 'mine':
+                                    console.log('build mine');
+                                break;
+                            }
+                            state.screen = 'game'; //close the modal
+                            return modalButton;
+                        }
+                    });
+                }
+
+                //sprite: x,y,w,h
+                //click: x,y (upper left)
+                //check if this sprite was clicked
+                //get left and top edge of sprite
+                var sLeftEdge = thisButton.x; //thisButton.x - thisButton.w / 2;
+                var sTopEdge = thisButton.y; //thisButton.y - thisButton.h / 2;
+                if(
+                    click.x > sLeftEdge && click.x < (sLeftEdge + thisButton.w)
+                    &&
+                    click.y > sTopEdge && click.y < (sTopEdge + thisButton.h)
+                ){
+                    console.log('CLICKED ME!');
+                    console.log(thisButton);
+                    switch(thisButton.label){
+                        case 'hire':
+                            planets.earth.base.buildings.office.crew++;
+                        break;
+                        case 'build':
+                            state.screen = 'modal';
+                            planets.earth.base.buildings.push('launchpad');
+                        break;
+                        case 'launch':
+                            console.log('launch');
+                        break;
+                    }
+                    return thisButton;
+                }
+
+            });
         });
     }
 
@@ -441,7 +624,6 @@ var gameRulesObject = function(){
     }
 
 }
-
 
 ////////////////////// 
 // TOOLS
