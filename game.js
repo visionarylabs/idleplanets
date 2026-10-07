@@ -23,7 +23,7 @@ var then = performance.now();
 var modifier = 0;
 var delta = 0;
 var startTime = performance.now();
-var curTime = startTime;
+var curTime = 0; //seconds since start (was startTime in ms, which made days jump back after the 1st frame)
 
 //drawing vars
 var gridSize = 40;
@@ -71,12 +71,40 @@ canvas.addEventListener('mousemove', function(e) {
 var state = {};
 state.earthDays = 0;
 state.funds = 50000; //starting funds
-state.flights = []; //ships in flight to other planets
+state.flights = []; //ships in flight between planets
 state.screen = 'game';
-state.modal = null; //label of the button that opened the modal (build / launch)
+state.modal = null; //which planet menu is open (economy / launch)
+state.modalPlanet = null; //which planet the open menu is for
+state.view = 'planets'; //bottom tab view - planets (list + menus), space (orbit placeholder) or ships (all flights)
 
-//made up travel days from earth to each planet
-var travelDays = { mercury : 80, venus : 50, earth : 0, mars : 100, jupiter : 200, saturn : 300, uranus : 400, neptune : 500 };
+//bottom tabs to switch views
+var viewTabs = [
+    { label : 'planets', view : 'planets', x : 102, y : 568, w : 125, h : 26 },
+    { label : 'space',   view : 'space',   x : 237, y : 568, w : 125, h : 26 },
+    { label : 'ships',   view : 'ships',   x : 372, y : 568, w : 125, h : 26 }
+];
+
+//building settings - build/upgrade cost is cost x next level, max crew (or ships) is perLevel x level
+//levelBonus - each level past 1 adds this much to earnings per crew (0.5 = lvl 2 x1.5, lvl 3 x2...)
+//each building needs the 'requires' building at level 1+ before it unlocks
+var buildingTypes = {
+    office :    { cost : 10000, hireCost : 1000, earning : 100, perLevel : 5, levelBonus : 0.5, requires : null },
+    mine :      { cost : 20000, hireCost : 2000, earning : 300, perLevel : 5, levelBonus : 0.5, requires : 'office' },
+    launchpad : { cost : 30000, hireCost : 1000, earning : 0,   perLevel : 2, levelBonus : 0,   requires : 'mine' } //hireCost here = ship cost
+};
+
+//earnings multiplier for a building's current level
+var levelMultiplier = function(b){
+    return 1 + buildingTypes[b.type].levelBonus * Math.max(b.level - 1, 0);
+}
+
+//made up travel days - 100 days per orbit between planets (earth to mars 100, jupiter 200...)
+var travelDays = function(from, to){
+    return 100 * Math.abs(planetNames.indexOf(from) - planetNames.indexOf(to));
+};
+
+//buttons drawn in the open modal this frame, used for clicks
+var modalButtons = [];
 
 //modal close (X) button, top right of modal
 var modalClose = { x : 515, y : 55, w : 30, h : 30 };
@@ -119,7 +147,6 @@ var init = function(){
 var resetGame = function () {
     sun.y = 0;
     sun.x = 0;
-    planets.earth.base.buildings.office.crew = 1;
     console.log('here is the state');
     console.log(state);
     //setup the battlefield
@@ -142,10 +169,8 @@ var update = function (modifier) {
     //timer for earth days
     //add income only for new days passed, so hires don't pay out retroactively
     var newDays = Math.round( (curTime / 24) * options.gameSpeed );
-    //each mine triples income per day
-    var mines = planets.earth.base.buildings.mine ? planets.earth.base.buildings.mine.count : 0;
     var daysPassed = newDays - state.earthDays;
-    state.funds += daysPassed * planets.earth.base.buildings.office.earning * planets.earth.base.buildings.office.crew * Math.pow(3, mines);
+    state.funds += daysPassed * totalIncome();
     state.earthDays = newDays;
 
     //move ships in flight, they land on their destination planet when days run out
@@ -164,24 +189,123 @@ var render = function () {
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     showBg();
     showText();
-    showSprites();
-    showInterface();
+    //space view replaces the planet list and menus
+    if(state.view === 'space'){
+        showSpaceView();
+    }else if(state.view === 'ships'){
+        showShipView();
+    }else{
+        showSprites();
+        showInterface();
+    }
+    showTabs();
 };
+
+//bottom view tabs - active tab is lighter
+var showTabs = function(){
+    viewTabs.forEach(function(tab){
+        var active = state.view === tab.view;
+        ctx.fillStyle = active ? "rgb(200,200,200)" : "rgb(70,70,70)";
+        ctx.fillRect(tab.x, tab.y, tab.w, tab.h);
+        ctx.fillStyle = active ? "black" : "rgb(170,170,170)";
+        ctx.font = "normal 10pt Verdana";
+        ctx.textAlign = "center";
+        ctx.fillText(tab.label, tab.x + tab.w / 2, tab.y + 18);
+        ctx.textAlign = "left";
+    });
+}
+
+//ship view - every ship in space grouped by route, like the launch menu list but for all planets
+var showShipView = function(){
+    var x = 60;
+    var y = 100;
+    ctx.fillStyle = "white";
+    ctx.font = "normal 14pt Verdana";
+    ctx.fillText('Ships in space: ' + state.flights.length, x, y);
+
+    var groups = flightGroups(state.flights);
+    ctx.font = "normal 10pt Verdana";
+    y += 35;
+    if(groups.length === 0) ctx.fillText('no ships in space', x, y);
+    groups.forEach(function(g){
+        ctx.fillText(g.route + ': ' + g.count + ' ship' + (g.count > 1 ? 's' : '') + ', ' + g.days + ' days', x, y);
+        y += 22;
+    });
+}
+
+//space view placeholder - small sun in the center, planets on simple circle orbits, outer ones slower
+var showSpaceView = function(){
+    var cx = canvas.width / 2;
+    var cy = canvas.height / 2;
+    var seconds = (performance.now() - startTime) / 1000;
+
+    //sun - 100px, spins like the planet view sun
+    ctx.setTransform(1, 0, 0, 1, cx, cy);
+    ctx.rotate(sun.rotation * Math.PI/180);
+    ctx.drawImage( sun.image, -50, -50, 100, 100 );
+    ctx.setTransform(1,0,0,1,0,0);
+
+    planetNames.forEach(function(name, i){
+        var p = planets[name];
+        var orbit = 70 + i * 24; //orbit radius in px
+        var angle = i * 0.8 + seconds * 0.6 / (i + 1); //start spread out, outer planets slower
+        var x = cx + Math.cos(angle) * orbit;
+        var y = cy + Math.sin(angle) * orbit;
+
+        //faint orbit ring
+        ctx.strokeStyle = "rgba(255,255,255,0.12)";
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.arc(cx, cy, orbit, 0, 2 * Math.PI);
+        ctx.stroke();
+
+        //planet - same size as the planet view
+        ctx.fillStyle = "rgb(150,150,150)";
+        ctx.beginPath();
+        ctx.arc(x, y, p.spriteRadius, 0, 2 * Math.PI);
+        ctx.fill();
+
+        //name label under planet
+        ctx.fillStyle = "white";
+        ctx.font = "normal 8pt Verdana";
+        ctx.textAlign = "center";
+        ctx.fillText(name, x, y + p.spriteRadius + 12);
+        ctx.textAlign = "left";
+    });
+}
 
 /**
     FACTORIES
 **/
 
+//buildings start at level 0 (not built yet) - settings live in buildingTypes
 var buildingFactory = function(type){
 
     var building = {
         type : type,
-        count : 1, //number of this building on the base
-        crew : 1,
-        earning : 100, //dollars per earth day per crew
+        level : 0,
+        crew : 0,
     }
-    
+
     return building;
+}
+
+//income per day for one planet - each crew earns their building's rate x level multiplier
+var planetIncome = function(p){
+    var b = p.base.buildings;
+    return Math.round(b.office.crew * buildingTypes.office.earning * levelMultiplier(b.office) + b.mine.crew * buildingTypes.mine.earning * levelMultiplier(b.mine));
+}
+
+//income per day across all planets
+var totalIncome = function(){
+    var total = 0;
+    planetNames.forEach(function(name){ total += planetIncome(planets[name]); });
+    return total;
+}
+
+//a planet has a base (menus unlocked) if it's earth, has ships landed, or has an office
+var hasBase = function(p){
+    return p.name === 'earth' || p.base.ships.length > 0 || p.base.buildings.office.level > 0;
 }
 
 var shipFactory = function(){
@@ -222,7 +346,8 @@ var planetFactory = function(name){
             fuel : 0,
             inspiration : 0,
             discontent : 0,
-            buildings : {},
+            //every planet has each building at level 0 until built
+            buildings : { office : buildingFactory('office'), mine : buildingFactory('mine'), launchpad : buildingFactory('launchpad') },
             ships : [],
         }
     }
@@ -240,7 +365,6 @@ var planetFactory = function(name){
 
         case 'earth':
             planet.diameter = 8000;
-            planet.base.buildings.office = buildingFactory('office');
         break;
 
         case 'mars':
@@ -275,11 +399,9 @@ var planetFactory = function(name){
     curY -= gridSize * 1.5;
     curX += 0;
 
-    if(name == 'earth'){
-        planet.buttons.push( buttonFactory('hire',planet) );
-        planet.buttons.push( buttonFactory('build',planet) );
-        planet.buttons.push( buttonFactory('launch',planet) );
-    }
+    //every planet gets an economy and launch menu button
+    planet.buttons.push( buttonFactory('economy',planet) );
+    planet.buttons.push( buttonFactory('launch',planet) );
 
 
     return planet;
@@ -292,61 +414,49 @@ var buildPlanets = function(){
     console.log(planets);
 }
 
-var buttonFactory = function(text,planet,type){
+var buttonFactory = function(text,planet){
     var textX = 140;
-    var buttonWidth = 50;
+    var buttonWidth = 70;
     var buttonHeight = 20;
     var buttonPadding = 5;
 
     var button = {
-        action : null,
         label : text,
+        planet : planet,
         x : planet.x + textX - buttonPadding,
         y : planet.y - buttonPadding,
         w : buttonWidth,
-        h : buttonHeight,
-        buttons : []
+        h : buttonHeight
     }
 
-    //buttons with a price show their cost underneath
-    if(text === 'ship') button.cost = shipFactory().cost;
-    if(text === 'launchpad' || text === 'hire') button.cost = 1000;
-    if(text === 'mine') button.cost = 50000;
+    //move button over in row
+    button.x += (planet.buttons.length * (buttonWidth + buttonPadding) );
 
-    if(text === 'build'){
-        button.buttons.push( buttonFactory('ship',planet,'build') );
-        button.buttons.push( buttonFactory('launchpad',planet,'build') );
-        button.buttons.push( buttonFactory('mine',planet,'build') );
-    }
-
-    //launch modal has a destination button for each planet
-    if(text === 'launch'){
-        planetNames.forEach(function(name){
-            var destButton = buttonFactory(name,planet,'launch');
-            destButton.destination = name;
-            destButton.travelDays = travelDays[name];
-            button.buttons.push(destButton);
-        });
-    }
-
-    if(type === undefined){
-        //move button over in row
-        button.x += (planet.buttons.length * (buttonWidth + buttonPadding) );
-    }else{
-        button.x = 80;
-        button.y = 80;
-        button.w = 100;
-    }
- 
     return button;
 }
 
-//true if a button can't be used right now - can't afford, or nothing to launch
+//flights leaving from or heading to a planet
+var planetFlights = function(p){
+    return state.flights.filter(function(ship){ return ship.origin === p.name || ship.destination === p.name; });
+}
+
+//group flights by route (earth → mars) with ship count and days until the next one lands
+var flightGroups = function(flights){
+    var groups = {};
+    flights.forEach(function(ship){
+        var route = ship.origin + ' → ' + ship.destination;
+        var g = groups[route] = groups[route] || { route : route, count : 0, days : ship.distanceLeft };
+        g.count++;
+        g.days = Math.min(g.days, ship.distanceLeft);
+    });
+    return Object.keys(groups).map(function(route){ return groups[route]; });
+}
+
+//true if a planet button can't be used - economy needs a base, launch needs a launchpad and ships to send or watch
 var buttonDisabled = function(button){
-    var base = planets.earth.base;
-    if(button.cost && state.funds < button.cost) return true;
-    if(button.label === 'launch') return !base.buildings.launchpad || (base.ships.length === 0 && state.flights.length === 0);
-    if(button.destination) return button.destination === 'earth' || base.ships.length === 0;
+    var p = button.planet;
+    if(button.label === 'economy') return !hasBase(p);
+    if(button.label === 'launch') return p.base.buildings.launchpad.level < 1 || (p.base.ships.length === 0 && planetFlights(p).length === 0);
     return false;
 }
 
@@ -387,52 +497,23 @@ var showSprites = function(){
         ctx.font = "normal 11pt Verdana";
         ctx.fillText(element, p.x + textX, p.y + 10);
 
-        //ships that have landed on other planets
+        //short planet summary under the name - income and ships, only once it has a base
         ctx.font = "normal 9pt Verdana";
-        if(element !== 'earth' && p.base.ships.length > 0) ctx.fillText('ships: ' + p.base.ships.length, p.x + 140, p.y + 10);
-
-        textX += 80;
-
-        //planet interface
-        if(p.buttons.length > 0 ){
-            p.buttons.forEach(function(button){
-                
-                var buttonLabel = button.label;
-    
-                //print crew
-                ctx.fillStyle = "white";
-                ctx.font = "normal 9pt Verdana";
-                ctx.fillText('crew: ' + p.base.buildings.office.crew, p.x + 40, p.y + 24);
-                ctx.fillText('ships: ' + p.base.ships.length, p.x + 200, p.y + 24);
-                ctx.fillText('launchpads: ' + (p.base.buildings.launchpad ? p.base.buildings.launchpad.count : 0), p.x + 200, p.y + 36);
-                ctx.fillText('mines: ' + (p.base.buildings.mine ? p.base.buildings.mine.count : 0), p.x + 200, p.y + 48);
-                ctx.fillText('in flight: ' + state.flights.length, p.x + 200, p.y + 60);
-
-                //print button - darker when disabled
-                var disabled = buttonDisabled(button);
-                ctx.fillStyle = disabled ? "rgb(70,70,70)" : "rgb(150,150,150)";
-                ctx.fillRect(button.x, button.y, button.w, button.h);
-
-                ctx.fillStyle = disabled ? "rgb(130,130,130)" : "black";
-                ctx.font = "normal 10pt Verdana";
-                ctx.fillText(buttonLabel, button.x + 4, button.y + 14);
-
-                //print cost under button
-                ctx.fillStyle = "white";
-                ctx.font = "normal 9pt Verdana";
-                if(button.cost) ctx.fillText('$' + button.cost.toLocaleString(), button.x + 4, button.y + button.h + 12);
-
-                //print buildings
-                ctx.fillStyle = "white";
-                ctx.font = "normal 9pt Verdana";
-
-                ctx.fillText('max crew: ' + p.base.maxCrew, p.x + 40, p.y + 36);
-
-                //print inspiration
-                ctx.fillText('inspiration: ' + p.base.inspiration, p.x + 40, p.y + 48);
-
-            });
+        if(hasBase(p)){
+            ctx.fillText('$' + planetIncome(p).toLocaleString() + '/day', p.x + textX, p.y + 24);
+            ctx.fillText(p.base.ships.length + ' ship' + (p.base.ships.length === 1 ? '' : 's'), p.x + textX, p.y + 36);
         }
+
+        //planet menu buttons - darker when disabled
+        p.buttons.forEach(function(button){
+            var disabled = buttonDisabled(button);
+            ctx.fillStyle = disabled ? "rgb(70,70,70)" : "rgb(150,150,150)";
+            ctx.fillRect(button.x, button.y, button.w, button.h);
+
+            ctx.fillStyle = disabled ? "rgb(130,130,130)" : "black";
+            ctx.font = "normal 10pt Verdana";
+            ctx.fillText(button.label, button.x + 4, button.y + 14);
+        });
 
     });
 
@@ -472,78 +553,110 @@ var showInterface = function () {
         ctx.font = "24px Helvetica";
 
         verticalOffset += modalOffset;
-        ctx.fillText(state.modal.charAt(0).toUpperCase() + state.modal.slice(1), horizontalOffset, verticalOffset);
+        var p = planets[state.modalPlanet];
+        ctx.fillText(p.name + ' ' + state.modal, horizontalOffset, verticalOffset);
 
-        //launch modal - list ships in flight grouped by destination, with days until the next one lands
-        if(state.modal === 'launch'){
-            var groups = {};
-            state.flights.forEach(function(ship){
-                var g = groups[ship.destination] = groups[ship.destination] || { count : 0, days : ship.distanceLeft };
-                g.count++;
-                g.days = Math.min(g.days, ship.distanceLeft);
-            });
-            ctx.font = "18px Helvetica";
-            ctx.fillText('In flight', 300, verticalOffset + 40);
-            ctx.font = "14px Helvetica";
-            var flightY = verticalOffset + 65;
-            if(state.flights.length === 0) ctx.fillText('no ships in flight', 300, flightY);
-            Object.keys(groups).forEach(function(dest){
-                var g = groups[dest];
-                ctx.fillText(dest + ': ' + g.count + ' ship' + (g.count > 1 ? 's' : '') + ', ' + g.days + ' days left', 300, flightY);
-                flightY += 22;
-            });
-        }
+        modalButtons = [];
+        if(state.modal === 'economy') showEconomyMenu(p, horizontalOffset, verticalOffset + 40);
+        if(state.modal === 'launch') showLaunchMenu(p, horizontalOffset, verticalOffset + 40);
+    }
+}
 
-        ctx.fillStyle = "rgb(0, 90, 0)";
+//draw a modal button and remember it for clicks - note text goes under the button
+var drawModalButton = function(label, x, y, w, disabled, note, action){
+    var b = { label : label, x : x, y : y, w : w, h : 20, disabled : disabled, action : action };
+    var hover = mousePos.x > b.x && mousePos.x < b.x + b.w && mousePos.y > b.y && mousePos.y < b.y + b.h;
+
+    //faded when disabled, highlight on hover
+    ctx.fillStyle = disabled ? "rgb(235,235,235)" : (hover ? "rgb(255,150,150)" : "rgb(200,200,200)");
+    ctx.fillRect(b.x, b.y, b.w, b.h);
+
+    ctx.font = "14px Helvetica";
+    ctx.fillStyle = disabled ? "rgb(170,170,170)" : "rgb(0,0,0)";
+    ctx.fillText(label, b.x + 4, b.y + b.h - 6);
+    if(note) ctx.fillText(note, b.x + 4, b.y + b.h + 13);
+
+    modalButtons.push(b);
+}
+
+//economy menu - a row per building: build/upgrade, then hire crew (or add ships for launchpad)
+var showEconomyMenu = function(p, x, y){
+    ['office', 'mine', 'launchpad'].forEach(function(type){
+        var b = p.base.buildings[type];
+        var t = buildingTypes[type];
+        var locked = t.requires && p.base.buildings[t.requires].level < 1;
+
+        ctx.fillStyle = locked ? "rgb(170,170,170)" : "rgb(0,0,0)";
+        ctx.font = "18px Helvetica";
+        ctx.fillText(type + (b.level ? '  - level ' + b.level : ''), x, y);
         ctx.font = "14px Helvetica";
 
-        //loop all planets check for interfaces and buttons
-        if(state.screen === 'modal'){
-            var loopObj = planetNames;
-            var loopLength = loopObj.length;
-
-            var curX = horizontalOffset;
-            var curY = verticalOffset;
-
-            loopObj.forEach(function(element){
-                var p = planets[element];
-                if( p.buttons.length == 0 ) return;
-                p.buttons.forEach(function(thisButton){
-                    if( thisButton.label !== state.modal ) return; //only buttons for the open modal
-                    thisButton.buttons.forEach(function(modalButton){
-                        curY += 40; //extra space for cost text under button
-
-                        modalButton.y = curY;
-                        var disabled = buttonDisabled(modalButton);
-
-                        //print button
-                        //button hover in modal, faded when disabled
-                        if(disabled){
-                            ctx.fillStyle = "rgb(235,235,235)";
-                        }else if(
-                            mousePos.x > modalButton.x &&
-                            mousePos.x < (modalButton.x + modalButton.w) &&
-                            mousePos.y > modalButton.y &&
-                            mousePos.y < (modalButton.y + modalButton.h)
-                        ){
-                            ctx.fillStyle = "rgb(255,150,150)";
-                        }else{
-                            ctx.fillStyle = "rgb(200,200,200)";
-                        }
-                        ctx.fillRect(modalButton.x, modalButton.y, modalButton.w, modalButton.h);
-
-                        ctx.fillStyle = disabled ? "rgb(170,170,170)" : "rgb(0,0,0)";
-                        ctx.fillText(modalButton.label, modalButton.x + 4, modalButton.y + modalButton.h - 6);
-
-                        //print cost or travel days under button
-                        if(modalButton.cost) ctx.fillText('$' + modalButton.cost.toLocaleString(), modalButton.x + 4, modalButton.y + modalButton.h + 13);
-                        if(modalButton.travelDays) ctx.fillText(modalButton.travelDays + ' days', modalButton.x + 4, modalButton.y + modalButton.h + 13);
-                    });
-                });
-            });
+        if(locked){
+            ctx.fillText('locked - build a ' + t.requires + ' first', x, y + 22);
+            y += 70;
+            return;
         }
 
-    }
+        //crew (or ships) vs max for this level
+        var isPad = type === 'launchpad';
+        var count = isPad ? p.base.ships.length : b.crew;
+        var max = b.level * t.perLevel;
+        ctx.fillStyle = "rgb(0,90,0)";
+        var mult = levelMultiplier(b);
+        ctx.fillText((isPad ? 'ships ' : 'crew ') + count + ' / ' + max + (t.earning ? '  ·  $' + Math.round(t.earning * mult) + '/day per crew  (x' + mult + ')' : ''), x, y + 22);
+
+        //upgrade only once crew (or ships) are full - first build has max 0 so it's always allowed
+        var buildCost = t.cost * (b.level + 1);
+        var notFull = count < max;
+        drawModalButton(b.level ? 'upgrade' : 'build', x, y + 35, 100, notFull || state.funds < buildCost, '$' + buildCost.toLocaleString(), function(){
+            state.funds -= buildCost;
+            b.level++;
+        });
+        if(notFull){
+            ctx.fillStyle = "rgb(170,170,170)";
+            ctx.fillText('fill ' + (isPad ? 'ships' : 'crew') + ' to upgrade', x + 240, y + 50);
+        }
+
+        drawModalButton(isPad ? 'add ship' : 'hire', x + 120, y + 35, 100, b.level < 1 || count >= max || state.funds < t.hireCost, '$' + t.hireCost.toLocaleString(), function(){
+            state.funds -= t.hireCost;
+            if(isPad) p.base.ships.push( shipFactory() ); else b.crew++;
+        });
+
+        y += 100;
+    });
+}
+
+//launch menu - destination buttons on the left, ships here and in space on the right
+var showLaunchMenu = function(p, x, y){
+    planetNames.forEach(function(name){
+        var days = travelDays(p.name, name);
+        drawModalButton(name, x, y, 100, name === p.name || p.base.ships.length === 0, name === p.name ? 'you are here' : days + ' days', function(){
+            //send 1 ship from this planet
+            var ship = p.base.ships.pop();
+            ship.origin = p.name;
+            ship.destination = name;
+            ship.distanceLeft = days;
+            state.flights.push(ship);
+        });
+        y += 40;
+    });
+
+    //ships in space to or from this planet
+    var groups = flightGroups(planetFlights(p));
+
+    var rightX = 300;
+    var listY = 140;
+    ctx.fillStyle = "rgb(0,0,0)";
+    ctx.font = "18px Helvetica";
+    ctx.fillText('Ships here: ' + p.base.ships.length, rightX, listY);
+    ctx.fillText('In space', rightX, listY + 40);
+    ctx.font = "14px Helvetica";
+    listY += 65;
+    if(groups.length === 0) ctx.fillText('no ships in space', rightX, listY);
+    groups.forEach(function(g){
+        ctx.fillText(g.route + ': ' + g.count + ' ship' + (g.count > 1 ? 's' : '') + ', ' + g.days + ' days', rightX, listY);
+        listY += 22;
+    });
 }
 
 // game ui
@@ -560,8 +673,11 @@ var showText = function(){
         displayTimeLabel = "Years";
     }
     
-    ctx.fillText("Earth Time: " + displayTime + " " + displayTimeLabel, 400, 20);
-    ctx.fillText("Funds: " + (state.funds), 450, 40);
+    //overview - right aligned so longer numbers fit
+    ctx.textAlign = "right";
+    ctx.fillText("Earth Time: " + displayTime + " " + displayTimeLabel, 590, 20);
+    ctx.fillText("Funds: $" + state.funds.toLocaleString() + "  (+$" + totalIncome().toLocaleString() + "/day)", 590, 40);
+    ctx.textAlign = "left";
 };
 
 // bg
@@ -615,128 +731,42 @@ var mainLoop = function () {
 var gameRulesObject = function(){
     
     var checkClickForButton = function(click){
+        var hit = function(b){
+            return click.x > b.x && click.x < (b.x + b.w) && click.y > b.y && click.y < (b.y + b.h);
+        };
 
-        //loop all planets check for interfaces and buttons
-        var loopObj;
-        var loopLength;
-
-        //loop all planets check for interfaces and buttons
-        loopObj = planetNames;
-        loopLength = loopObj.length;
-
-        //remember if modal was open so buttons hidden under it can't be clicked
-        var modalOpen = state.screen === 'modal';
-
-        //close X clicked - close the modal
-        var c = modalClose;
-        if(modalOpen && click.x > c.x && click.x < c.x + c.w && click.y > c.y && click.y < c.y + c.h){
-            state.screen = 'game';
-            return;
+        //modal open - only the close X and the modal's own buttons can be clicked
+        if(state.screen === 'modal'){
+            if(hit(modalClose)){
+                state.screen = 'game';
+                return;
+            }
+            var modalButton = modalButtons.filter(function(b){ return !b.disabled && hit(b); })[0];
+            if(modalButton) modalButton.action();
+            return modalButton;
         }
 
-        loopObj.forEach(function(element){
-            var p = planets[element];
-            if( p.buttons.length == 0 ) return;
+        //bottom tabs switch views
+        var tab = viewTabs.filter(hit)[0];
+        if(tab){
+            state.view = tab.view;
+            return;
+        }
+        if(state.view !== 'planets') return; //space and ship views - nothing else to click
 
-            p.buttons.forEach(function(thisButton){
-
-                //SUB loop for modal buttons
-                //todo check for each modal screen
-                if(state.screen === 'modal' && thisButton.label === state.modal){
-                    thisButton.buttons.forEach(function(modalButton){
-                        var sLeftEdge = modalButton.x;
-                        var sTopEdge = modalButton.y;
-                        if(
-                            !buttonDisabled(modalButton) &&
-                            click.x > sLeftEdge && click.x < (sLeftEdge + modalButton.w)
-                            &&
-                            click.y > sTopEdge && click.y < (sTopEdge + modalButton.h)
-                        ){
-                            console.log('CLICKED A MODAL BUTTON!');
-                            console.log(modalButton);
-                            switch(modalButton.label){
-                                case 'ship':
-                                    //buy a ship for earth if we can afford it
-                                    if(state.funds >= modalButton.cost){
-                                        state.funds -= modalButton.cost;
-                                        planets.earth.base.ships.push( shipFactory() );
-                                    }else{
-                                        console.log('not enough funds for ship');
-                                    }
-                                break;
-                                case 'launchpad':
-                                    //buy a launchpad - first one creates the building, then add to count
-                                    if(state.funds >= modalButton.cost){
-                                        state.funds -= modalButton.cost;
-                                        var pads = planets.earth.base.buildings;
-                                        if(pads.launchpad) pads.launchpad.count++; else pads.launchpad = buildingFactory('launchpad');
-                                    }else{
-                                        console.log('not enough funds for launchpad');
-                                    }
-                                break;
-                                case 'mine':
-                                    //buy a mine - first one creates the building, then add to count
-                                    if(state.funds >= modalButton.cost){
-                                        state.funds -= modalButton.cost;
-                                        var mines = planets.earth.base.buildings;
-                                        if(mines.mine) mines.mine.count++; else mines.mine = buildingFactory('mine');
-                                    }else{
-                                        console.log('not enough funds for mine');
-                                    }
-                                break;
-                                default:
-                                    //destination button - send 1 ship from earth to that planet
-                                    if(modalButton.destination){
-                                        var ship = planets.earth.base.ships.pop();
-                                        ship.destination = modalButton.destination;
-                                        ship.distanceLeft = modalButton.travelDays;
-                                        state.flights.push(ship);
-                                    }
-                                break;
-                            }
-                            if(state.modal === 'launch') return; //keep launch modal open to see ships in flight
-                            state.screen = 'game'; //close the modal
-                            return modalButton;
-                        }
-                    });
+        //main screen - planet buttons open that planet's economy or launch menu
+        var clicked;
+        planetNames.forEach(function(name){
+            planets[name].buttons.forEach(function(thisButton){
+                if(!buttonDisabled(thisButton) && hit(thisButton)){
+                    clicked = thisButton;
+                    state.screen = 'modal';
+                    state.modal = thisButton.label;
+                    state.modalPlanet = name;
                 }
-
-                //sprite: x,y,w,h
-                //click: x,y (upper left)
-                //check if this sprite was clicked
-                //get left and top edge of sprite
-                var sLeftEdge = thisButton.x; //thisButton.x - thisButton.w / 2;
-                var sTopEdge = thisButton.y; //thisButton.y - thisButton.h / 2;
-                if(
-                    !modalOpen && !buttonDisabled(thisButton) &&
-                    click.x > sLeftEdge && click.x < (sLeftEdge + thisButton.w)
-                    &&
-                    click.y > sTopEdge && click.y < (sTopEdge + thisButton.h)
-                ){
-                    console.log('CLICKED ME!');
-                    console.log(thisButton);
-                    switch(thisButton.label){
-                        case 'hire':
-                            //hire 1 crew if we can afford it
-                            if(state.funds >= thisButton.cost){
-                                state.funds -= thisButton.cost;
-                                planets.earth.base.buildings.office.crew++;
-                            }else{
-                                console.log('not enough funds to hire');
-                            }
-                        break;
-                        case 'build':
-                        case 'launch':
-                            //open the modal for this button
-                            state.screen = 'modal';
-                            state.modal = thisButton.label;
-                        break;
-                    }
-                    return thisButton;
-                }
-
             });
         });
+        return clicked;
     }
 
     var processButtonClick = function(thisUnit){
