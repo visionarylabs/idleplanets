@@ -70,8 +70,12 @@ canvas.addEventListener('mousemove', function(e) {
 //GLOBAL GAME STATE
 var state = {};
 state.earthDays = 0;
-state.funds = 0;
+state.funds = 10000; //starting funds
+state.launched = 0; //ships launched from earth
 state.screen = 'game';
+
+//modal close (X) button, top right of modal
+var modalClose = { x : 515, y : 55, w : 30, h : 30 };
 
 //global vars / sprites
 var bg = {};
@@ -132,8 +136,12 @@ var update = function (modifier) {
     }
 
     //timer for earth days
-    state.earthDays = ( ( (curTime / 24) ) * options.gameSpeed).toFixed(0);
-    state.funds = (state.earthDays * planets.earth.base.buildings.office.earning * planets.earth.base.buildings.office.crew).toFixed(0);
+    //add income only for new days passed, so hires don't pay out retroactively
+    var newDays = Math.round( (curTime / 24) * options.gameSpeed );
+    //each mine triples income per day
+    var mines = planets.earth.base.buildings.mine ? planets.earth.base.buildings.mine.count : 0;
+    state.funds += (newDays - state.earthDays) * planets.earth.base.buildings.office.earning * planets.earth.base.buildings.office.crew * Math.pow(3, mines);
+    state.earthDays = newDays;
 
     sun.rotation++;
 };
@@ -154,9 +162,10 @@ var render = function () {
 var buildingFactory = function(type){
 
     var building = {
-        type : 'office',
+        type : type,
+        count : 1, //number of this building on the base
         crew : 1,
-        earning : 50, //dollars per earth day per crew
+        earning : 100, //dollars per earth day per crew
     }
     
     return building;
@@ -165,7 +174,7 @@ var buildingFactory = function(type){
 var shipFactory = function(){
 
     var ship = {
-        cost : 1000000,
+        cost : 1000,
         fuel : 1000000,
         crew : 1000,
         destination : null,
@@ -286,6 +295,11 @@ var buttonFactory = function(text,planet,type){
         buttons : []
     }
 
+    //buttons with a price show their cost underneath
+    if(text === 'ship') button.cost = shipFactory().cost;
+    if(text === 'launchpad' || text === 'hire') button.cost = 10000;
+    if(text === 'mine') button.cost = 50000;
+
     if(text === 'build'){
         button.buttons.push( buttonFactory('ship',planet,'build') );
         button.buttons.push( buttonFactory('launchpad',planet,'build') );
@@ -353,6 +367,10 @@ var showSprites = function(){
                 ctx.fillStyle = "white";
                 ctx.font = "normal 9pt Verdana";
                 ctx.fillText('crew: ' + p.base.buildings.office.crew, p.x + 40, p.y + 24);
+                ctx.fillText('ships: ' + p.base.ships.length, p.x + 200, p.y + 24);
+                ctx.fillText('launchpads: ' + (p.base.buildings.launchpad ? p.base.buildings.launchpad.count : 0), p.x + 200, p.y + 36);
+                ctx.fillText('mines: ' + (p.base.buildings.mine ? p.base.buildings.mine.count : 0), p.x + 200, p.y + 48);
+                ctx.fillText('launched: ' + state.launched, p.x + 200, p.y + 60);
 
                 //print button
                 ctx.fillStyle = "rgb(150,150,150)";
@@ -361,6 +379,11 @@ var showSprites = function(){
                 ctx.fillStyle = "black";
                 ctx.font = "normal 10pt Verdana";
                 ctx.fillText(buttonLabel, button.x + 4, button.y + 14);
+
+                //print cost under button
+                ctx.fillStyle = "white";
+                ctx.font = "normal 9pt Verdana";
+                if(button.cost) ctx.fillText('$' + button.cost.toLocaleString(), button.x + 4, button.y + button.h + 12);
 
                 //print buildings
                 ctx.fillStyle = "white";
@@ -395,6 +418,16 @@ var showInterface = function () {
         ctx.fillStyle = '#ffffff';
         ctx.fillRect( modalOffset, modalOffset, canvas.width - (modalOffset * 2), canvas.height - (modalOffset * 2) );
 
+        //close X button, highlights on hover
+        var c = modalClose;
+        var closeHover = mousePos.x > c.x && mousePos.x < c.x + c.w && mousePos.y > c.y && mousePos.y < c.y + c.h;
+        ctx.strokeStyle = closeHover ? "rgb(255,80,80)" : "rgb(120,120,120)";
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.moveTo(c.x + 8, c.y + 8); ctx.lineTo(c.x + c.w - 8, c.y + c.h - 8);
+        ctx.moveTo(c.x + c.w - 8, c.y + 8); ctx.lineTo(c.x + 8, c.y + c.h - 8);
+        ctx.stroke();
+
         ctx.textAlign = "left";
         //ctx.textBaseline = "top";
 
@@ -421,7 +454,7 @@ var showInterface = function () {
                 p.buttons.forEach(function(thisButton){
                     if( thisButton.buttons.length == 0 ) return;
                     thisButton.buttons.forEach(function(modalButton){
-                        curY += 30;
+                        curY += 40; //extra space for cost text under button
 
                         modalButton.y = curY;
 
@@ -441,6 +474,9 @@ var showInterface = function () {
 
                         ctx.fillStyle = "rgb(0,0,0)";
                         ctx.fillText(modalButton.label, modalButton.x + 4, modalButton.y + modalButton.h - 6);
+
+                        //print cost under button
+                        if(modalButton.cost) ctx.fillText('$' + modalButton.cost.toLocaleString(), modalButton.x + 4, modalButton.y + modalButton.h + 13);
                     });
                 });
             });
@@ -527,6 +563,16 @@ var gameRulesObject = function(){
         loopObj = planetNames;
         loopLength = loopObj.length;
 
+        //remember if modal was open so buttons hidden under it can't be clicked
+        var modalOpen = state.screen === 'modal';
+
+        //close X clicked - close the modal
+        var c = modalClose;
+        if(modalOpen && click.x > c.x && click.x < c.x + c.w && click.y > c.y && click.y < c.y + c.h){
+            state.screen = 'game';
+            return;
+        }
+
         loopObj.forEach(function(element){
             var p = planets[element];
             if( p.buttons.length == 0 ) return;
@@ -548,13 +594,33 @@ var gameRulesObject = function(){
                             console.log(modalButton);
                             switch(modalButton.label){
                                 case 'ship':
-                                    planets.earth.base.ships++;
+                                    //buy a ship for earth if we can afford it
+                                    if(state.funds >= modalButton.cost){
+                                        state.funds -= modalButton.cost;
+                                        planets.earth.base.ships.push( shipFactory() );
+                                    }else{
+                                        console.log('not enough funds for ship');
+                                    }
                                 break;
                                 case 'launchpad':
-                                    planets.earth.base.buildings.push('launchpad');
+                                    //buy a launchpad - first one creates the building, then add to count
+                                    if(state.funds >= modalButton.cost){
+                                        state.funds -= modalButton.cost;
+                                        var pads = planets.earth.base.buildings;
+                                        if(pads.launchpad) pads.launchpad.count++; else pads.launchpad = buildingFactory('launchpad');
+                                    }else{
+                                        console.log('not enough funds for launchpad');
+                                    }
                                 break;
                                 case 'mine':
-                                    console.log('build mine');
+                                    //buy a mine - first one creates the building, then add to count
+                                    if(state.funds >= modalButton.cost){
+                                        state.funds -= modalButton.cost;
+                                        var mines = planets.earth.base.buildings;
+                                        if(mines.mine) mines.mine.count++; else mines.mine = buildingFactory('mine');
+                                    }else{
+                                        console.log('not enough funds for mine');
+                                    }
                                 break;
                             }
                             state.screen = 'game'; //close the modal
@@ -570,6 +636,7 @@ var gameRulesObject = function(){
                 var sLeftEdge = thisButton.x; //thisButton.x - thisButton.w / 2;
                 var sTopEdge = thisButton.y; //thisButton.y - thisButton.h / 2;
                 if(
+                    !modalOpen &&
                     click.x > sLeftEdge && click.x < (sLeftEdge + thisButton.w)
                     &&
                     click.y > sTopEdge && click.y < (sTopEdge + thisButton.h)
@@ -578,14 +645,25 @@ var gameRulesObject = function(){
                     console.log(thisButton);
                     switch(thisButton.label){
                         case 'hire':
-                            planets.earth.base.buildings.office.crew++;
+                            //hire 1 crew if we can afford it
+                            if(state.funds >= thisButton.cost){
+                                state.funds -= thisButton.cost;
+                                planets.earth.base.buildings.office.crew++;
+                            }else{
+                                console.log('not enough funds to hire');
+                            }
                         break;
                         case 'build':
                             state.screen = 'modal';
-                            planets.earth.base.buildings.push('launchpad');
                         break;
                         case 'launch':
-                            console.log('launch');
+                            //needs a launchpad and a ship - launches 1 ship off earth
+                            if(planets.earth.base.buildings.launchpad && planets.earth.base.ships.length > 0){
+                                planets.earth.base.ships.pop();
+                                state.launched++;
+                            }else{
+                                console.log('need a launchpad and a ship to launch');
+                            }
                         break;
                     }
                     return thisButton;

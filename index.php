@@ -24,8 +24,6 @@
             <h2>Run a space exploration company</h2>
         </div>
 
-        <?php include_once('../../lib/includes/opalgames-footer.php'); ?>
-
         <script src="game.js?t=<?php print time(); ?>"></script>
 
     </body>
