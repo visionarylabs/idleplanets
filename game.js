@@ -70,9 +70,13 @@ canvas.addEventListener('mousemove', function(e) {
 //GLOBAL GAME STATE
 var state = {};
 state.earthDays = 0;
-state.funds = 10000; //starting funds
-state.launched = 0; //ships launched from earth
+state.funds = 50000; //starting funds
+state.flights = []; //ships in flight to other planets
 state.screen = 'game';
+state.modal = null; //label of the button that opened the modal (build / launch)
+
+//made up travel days from earth to each planet
+var travelDays = { mercury : 80, venus : 50, earth : 0, mars : 100, jupiter : 200, saturn : 300, uranus : 400, neptune : 500 };
 
 //modal close (X) button, top right of modal
 var modalClose = { x : 515, y : 55, w : 30, h : 30 };
@@ -140,8 +144,17 @@ var update = function (modifier) {
     var newDays = Math.round( (curTime / 24) * options.gameSpeed );
     //each mine triples income per day
     var mines = planets.earth.base.buildings.mine ? planets.earth.base.buildings.mine.count : 0;
-    state.funds += (newDays - state.earthDays) * planets.earth.base.buildings.office.earning * planets.earth.base.buildings.office.crew * Math.pow(3, mines);
+    var daysPassed = newDays - state.earthDays;
+    state.funds += daysPassed * planets.earth.base.buildings.office.earning * planets.earth.base.buildings.office.crew * Math.pow(3, mines);
     state.earthDays = newDays;
+
+    //move ships in flight, they land on their destination planet when days run out
+    state.flights = state.flights.filter(function(ship){
+        ship.distanceLeft -= daysPassed;
+        if(ship.distanceLeft > 0) return true;
+        planets[ship.destination].base.ships.push(ship);
+        return false;
+    });
 
     sun.rotation++;
 };
@@ -297,7 +310,7 @@ var buttonFactory = function(text,planet,type){
 
     //buttons with a price show their cost underneath
     if(text === 'ship') button.cost = shipFactory().cost;
-    if(text === 'launchpad' || text === 'hire') button.cost = 10000;
+    if(text === 'launchpad' || text === 'hire') button.cost = 1000;
     if(text === 'mine') button.cost = 50000;
 
     if(text === 'build'){
@@ -305,7 +318,17 @@ var buttonFactory = function(text,planet,type){
         button.buttons.push( buttonFactory('launchpad',planet,'build') );
         button.buttons.push( buttonFactory('mine',planet,'build') );
     }
- 
+
+    //launch modal has a destination button for each planet
+    if(text === 'launch'){
+        planetNames.forEach(function(name){
+            var destButton = buttonFactory(name,planet,'launch');
+            destButton.destination = name;
+            destButton.travelDays = travelDays[name];
+            button.buttons.push(destButton);
+        });
+    }
+
     if(type === undefined){
         //move button over in row
         button.x += (planet.buttons.length * (buttonWidth + buttonPadding) );
@@ -316,6 +339,15 @@ var buttonFactory = function(text,planet,type){
     }
  
     return button;
+}
+
+//true if a button can't be used right now - can't afford, or nothing to launch
+var buttonDisabled = function(button){
+    var base = planets.earth.base;
+    if(button.cost && state.funds < button.cost) return true;
+    if(button.label === 'launch') return !base.buildings.launchpad || (base.ships.length === 0 && state.flights.length === 0);
+    if(button.destination) return button.destination === 'earth' || base.ships.length === 0;
+    return false;
 }
 
 // SPRITES
@@ -355,6 +387,10 @@ var showSprites = function(){
         ctx.font = "normal 11pt Verdana";
         ctx.fillText(element, p.x + textX, p.y + 10);
 
+        //ships that have landed on other planets
+        ctx.font = "normal 9pt Verdana";
+        if(element !== 'earth' && p.base.ships.length > 0) ctx.fillText('ships: ' + p.base.ships.length, p.x + 140, p.y + 10);
+
         textX += 80;
 
         //planet interface
@@ -370,13 +406,14 @@ var showSprites = function(){
                 ctx.fillText('ships: ' + p.base.ships.length, p.x + 200, p.y + 24);
                 ctx.fillText('launchpads: ' + (p.base.buildings.launchpad ? p.base.buildings.launchpad.count : 0), p.x + 200, p.y + 36);
                 ctx.fillText('mines: ' + (p.base.buildings.mine ? p.base.buildings.mine.count : 0), p.x + 200, p.y + 48);
-                ctx.fillText('launched: ' + state.launched, p.x + 200, p.y + 60);
+                ctx.fillText('in flight: ' + state.flights.length, p.x + 200, p.y + 60);
 
-                //print button
-                ctx.fillStyle = "rgb(150,150,150)";
+                //print button - darker when disabled
+                var disabled = buttonDisabled(button);
+                ctx.fillStyle = disabled ? "rgb(70,70,70)" : "rgb(150,150,150)";
                 ctx.fillRect(button.x, button.y, button.w, button.h);
-    
-                ctx.fillStyle = "black";
+
+                ctx.fillStyle = disabled ? "rgb(130,130,130)" : "black";
                 ctx.font = "normal 10pt Verdana";
                 ctx.fillText(buttonLabel, button.x + 4, button.y + 14);
 
@@ -435,7 +472,27 @@ var showInterface = function () {
         ctx.font = "24px Helvetica";
 
         verticalOffset += modalOffset;
-        ctx.fillText('Build', horizontalOffset, verticalOffset);
+        ctx.fillText(state.modal.charAt(0).toUpperCase() + state.modal.slice(1), horizontalOffset, verticalOffset);
+
+        //launch modal - list ships in flight grouped by destination, with days until the next one lands
+        if(state.modal === 'launch'){
+            var groups = {};
+            state.flights.forEach(function(ship){
+                var g = groups[ship.destination] = groups[ship.destination] || { count : 0, days : ship.distanceLeft };
+                g.count++;
+                g.days = Math.min(g.days, ship.distanceLeft);
+            });
+            ctx.font = "18px Helvetica";
+            ctx.fillText('In flight', 300, verticalOffset + 40);
+            ctx.font = "14px Helvetica";
+            var flightY = verticalOffset + 65;
+            if(state.flights.length === 0) ctx.fillText('no ships in flight', 300, flightY);
+            Object.keys(groups).forEach(function(dest){
+                var g = groups[dest];
+                ctx.fillText(dest + ': ' + g.count + ' ship' + (g.count > 1 ? 's' : '') + ', ' + g.days + ' days left', 300, flightY);
+                flightY += 22;
+            });
+        }
 
         ctx.fillStyle = "rgb(0, 90, 0)";
         ctx.font = "14px Helvetica";
@@ -452,15 +509,18 @@ var showInterface = function () {
                 var p = planets[element];
                 if( p.buttons.length == 0 ) return;
                 p.buttons.forEach(function(thisButton){
-                    if( thisButton.buttons.length == 0 ) return;
+                    if( thisButton.label !== state.modal ) return; //only buttons for the open modal
                     thisButton.buttons.forEach(function(modalButton){
                         curY += 40; //extra space for cost text under button
 
                         modalButton.y = curY;
+                        var disabled = buttonDisabled(modalButton);
 
                         //print button
-                        //button hover in modal
-                        if(
+                        //button hover in modal, faded when disabled
+                        if(disabled){
+                            ctx.fillStyle = "rgb(235,235,235)";
+                        }else if(
                             mousePos.x > modalButton.x &&
                             mousePos.x < (modalButton.x + modalButton.w) &&
                             mousePos.y > modalButton.y &&
@@ -472,11 +532,12 @@ var showInterface = function () {
                         }
                         ctx.fillRect(modalButton.x, modalButton.y, modalButton.w, modalButton.h);
 
-                        ctx.fillStyle = "rgb(0,0,0)";
+                        ctx.fillStyle = disabled ? "rgb(170,170,170)" : "rgb(0,0,0)";
                         ctx.fillText(modalButton.label, modalButton.x + 4, modalButton.y + modalButton.h - 6);
 
-                        //print cost under button
+                        //print cost or travel days under button
                         if(modalButton.cost) ctx.fillText('$' + modalButton.cost.toLocaleString(), modalButton.x + 4, modalButton.y + modalButton.h + 13);
+                        if(modalButton.travelDays) ctx.fillText(modalButton.travelDays + ' days', modalButton.x + 4, modalButton.y + modalButton.h + 13);
                     });
                 });
             });
@@ -581,11 +642,12 @@ var gameRulesObject = function(){
 
                 //SUB loop for modal buttons
                 //todo check for each modal screen
-                if(state.screen === 'modal' && thisButton.buttons.length > 0){
+                if(state.screen === 'modal' && thisButton.label === state.modal){
                     thisButton.buttons.forEach(function(modalButton){
                         var sLeftEdge = modalButton.x;
                         var sTopEdge = modalButton.y;
                         if(
+                            !buttonDisabled(modalButton) &&
                             click.x > sLeftEdge && click.x < (sLeftEdge + modalButton.w)
                             &&
                             click.y > sTopEdge && click.y < (sTopEdge + modalButton.h)
@@ -622,7 +684,17 @@ var gameRulesObject = function(){
                                         console.log('not enough funds for mine');
                                     }
                                 break;
+                                default:
+                                    //destination button - send 1 ship from earth to that planet
+                                    if(modalButton.destination){
+                                        var ship = planets.earth.base.ships.pop();
+                                        ship.destination = modalButton.destination;
+                                        ship.distanceLeft = modalButton.travelDays;
+                                        state.flights.push(ship);
+                                    }
+                                break;
                             }
+                            if(state.modal === 'launch') return; //keep launch modal open to see ships in flight
                             state.screen = 'game'; //close the modal
                             return modalButton;
                         }
@@ -636,7 +708,7 @@ var gameRulesObject = function(){
                 var sLeftEdge = thisButton.x; //thisButton.x - thisButton.w / 2;
                 var sTopEdge = thisButton.y; //thisButton.y - thisButton.h / 2;
                 if(
-                    !modalOpen &&
+                    !modalOpen && !buttonDisabled(thisButton) &&
                     click.x > sLeftEdge && click.x < (sLeftEdge + thisButton.w)
                     &&
                     click.y > sTopEdge && click.y < (sTopEdge + thisButton.h)
@@ -654,16 +726,10 @@ var gameRulesObject = function(){
                             }
                         break;
                         case 'build':
-                            state.screen = 'modal';
-                        break;
                         case 'launch':
-                            //needs a launchpad and a ship - launches 1 ship off earth
-                            if(planets.earth.base.buildings.launchpad && planets.earth.base.ships.length > 0){
-                                planets.earth.base.ships.pop();
-                                state.launched++;
-                            }else{
-                                console.log('need a launchpad and a ship to launch');
-                            }
+                            //open the modal for this button
+                            state.screen = 'modal';
+                            state.modal = thisButton.label;
                         break;
                     }
                     return thisButton;
